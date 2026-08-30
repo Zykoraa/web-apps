@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify Liked Songs Transfer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #282828;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #1DB954;
+            margin-bottom: 30px;
+        }
+        .btn {
+            display: inline-block;
+            background-color: #1DB954;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 30px;
+            font-weight: bold;
+            font-size: 16px;
+            margin: 10px 0;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            width: 80%;
+        }
+        .btn:hover {
+            background-color: #1ed760;
+        }
+        .btn:disabled {
+            background-color: #535353;
+            color: #b3b3b3;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-bottom: 20px;
+            font-size: 18px;
+        }
+        .ready { color: #1DB954; }
+        .not-ready { color: #ff4d4d; }
+        #message {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        .logout {
+            margin-top: 30px;
+            color: #b3b3b3;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .logout:hover {
+            color: white;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Spotify Transfer Tool</h1>
+    
+    <div class="status">
+        <p>Old Account (Source): 
+            {% if source_ready %}
+                <span class="ready">Connected ✓</span>
+            {% else %}
+                <span class="not-ready">Not Connected ✗</span>
+            {% endif %}
+        </p>
+        <p>New Account (Destination): 
+            {% if dest_ready %}
+                <span class="ready">Connected ✓</span>
+            {% else %}
+                <span class="not-ready">Not Connected ✗</span>
+            {% endif %}
+        </p>
+    </div>
+
+    {% if not source_ready %}
+        <a href="/login/source" class="btn">Login to Old Account</a>
+    {% elif not dest_ready %}
+        <a href="/login/dest" class="btn">Login to New Account</a>
+    {% else %}
+        <button id="transferBtn" class="btn" onclick="startTransfer()">Transfer Liked Songs!</button>
+    {% endif %}
+
+    <div id="message"></div>
+
+    <div style="margin-top: 30px;">
+        <a href="/logout" class="logout">Reset / Logout all accounts</a>
+    </div>
+</div>
+
+<script>
+    function startTransfer() {
+        const btn = document.getElementById('transferBtn');
+        const msg = document.getElementById('message');
+        
+        btn.disabled = true;
+        btn.innerText = "Transferring... This may take a minute.";
+        msg.innerText = "";
+        
+        fetch('/transfer', {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                msg.style.color = "#1DB954";
+                msg.innerText = `Success! Transferred ${data.transferred} songs to your new account.`;
+                btn.innerText = "Transfer Complete";
+            } else {
+                msg.style.color = "#ff4d4d";
+                msg.innerText = `Error: ${data.error}`;
+                btn.disabled = false;
+                btn.innerText = "Try Again";
+            }
+        })
+        .catch(error => {
+            msg.style.color = "#ff4d4d";
+            msg.innerText = "A network error occurred.";
+            btn.disabled = false;
+            btn.innerText = "Try Again";
+        });
+    }
+</script>
+
+</body>
+</html>
