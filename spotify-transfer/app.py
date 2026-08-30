@@ -2,7 +2,7 @@ import os
 from flask import Flask, request, redirect, session, url_for, render_template, jsonify
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-from spotipy.cache_handler import FlaskSessionCacheHandler
+from spotipy.cache_handler import CacheHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,9 +15,21 @@ app.config['SESSION_COOKIE_NAME'] = 'spotify-transfer-session'
 # We need scope for reading from the old account and writing to the new one
 SCOPE = 'user-library-read user-library-modify'
 
+# Custom Cache Handler because Spotipy's default one doesn't support multiple keys
+class CustomFlaskSessionCacheHandler(CacheHandler):
+    def __init__(self, session, key):
+        self.session = session
+        self.key = key
+
+    def get_cached_token(self):
+        return self.session.get(self.key)
+
+    def save_token_to_cache(self, token_info):
+        self.session[self.key] = token_info
+
 def create_spotify_oauth(auth_type):
     """Creates a SpotifyOAuth object that securely saves login info to the user's browser session"""
-    cache_handler = FlaskSessionCacheHandler(session, key=f"token_info_{auth_type}")
+    cache_handler = CustomFlaskSessionCacheHandler(session, key=f"token_info_{auth_type}")
     
     return SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
@@ -57,7 +69,7 @@ def callback():
     sp_oauth = create_spotify_oauth(auth_type)
     code = request.args.get('code')
     
-    # This automatically saves the token to the session via the FlaskSessionCacheHandler
+    # This automatically saves the token to the session via the CacheHandler
     sp_oauth.get_access_token(code)
     
     session.pop('current_auth_type', None)
