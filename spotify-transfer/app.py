@@ -8,14 +8,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-# Use a strong secret key for production, fallback to random for local testing
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 app.config['SESSION_COOKIE_NAME'] = 'spotify-transfer-session'
 
-# We need scope for reading from the old account and writing to the new one
 SCOPE = 'user-library-read user-library-modify'
 
-# Custom Cache Handler because Spotipy's default one doesn't support multiple keys
 class CustomFlaskSessionCacheHandler(CacheHandler):
     def __init__(self, session, key):
         self.session = session
@@ -28,7 +25,6 @@ class CustomFlaskSessionCacheHandler(CacheHandler):
         self.session[self.key] = token_info
 
 def create_spotify_oauth(auth_type):
-    """Creates a SpotifyOAuth object that securely saves login info to the user's browser session"""
     cache_handler = CustomFlaskSessionCacheHandler(session, key=f"token_info_{auth_type}")
     
     return SpotifyOAuth(
@@ -37,7 +33,7 @@ def create_spotify_oauth(auth_type):
         redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
         scope=SCOPE,
         cache_handler=cache_handler,
-        show_dialog=True  # Force login screen to allow switching accounts
+        show_dialog=True 
     )
 
 @app.route('/')
@@ -45,7 +41,6 @@ def index():
     source_oauth = create_spotify_oauth('source')
     dest_oauth = create_spotify_oauth('dest')
     
-    # Check if the user's browser session currently holds valid tokens for both accounts
     source_ready = source_oauth.validate_token(source_oauth.cache_handler.get_cached_token()) is not None
     dest_ready = dest_oauth.validate_token(dest_oauth.cache_handler.get_cached_token()) is not None
     
@@ -68,8 +63,6 @@ def callback():
     
     sp_oauth = create_spotify_oauth(auth_type)
     code = request.args.get('code')
-    
-    # This automatically saves the token to the session via the CacheHandler
     sp_oauth.get_access_token(code)
     
     session.pop('current_auth_type', None)
@@ -89,13 +82,22 @@ def transfer():
     sp_source = spotipy.Spotify(auth=source_token_info['access_token'])
     sp_dest = spotipy.Spotify(auth=dest_token_info['access_token'])
     
-    # Fetch all liked songs from source
     liked_songs = []
     try:
         results = sp_source.current_user_saved_tracks(limit=50)
         while results:
             for item in results['items']:
-                liked_songs.append(item['track']['id'])
+                track = item.get('track')
+                if not track:
+                    continue
+                
+                # CRITICAL FIX: Skip local files (MP3s) and tracks that have been removed from Spotify
+                # Attempting to add a local file or a removed track to a new account causes a 403 Forbidden!
+                if track.get('is_local') or track.get('id') is None:
+                    continue
+                    
+                liked_songs.append(track['id'])
+                
             if results['next']:
                 results = sp_source.next(results)
             else:
@@ -103,15 +105,29 @@ def transfer():
     except Exception as e:
         return jsonify({"error": f"Failed to fetch songs from old account: {str(e)}"}), 500
             
-    # Add to destination in batches of 50 (Spotify API limit)
+    success_count = 0
     try:
         for i in range(0, len(liked_songs), 50):
             batch = liked_songs[i:i+50]
-            sp_dest.current_user_saved_tracks_add(tracks=batch)
+            try:
+                # Try adding the batch of 50
+                sp_dest.current_user_saved_tracks_add(tracks=batch)
+                success_count += len(batch)
+            except Exception as e:
+                # If the batch fails (e.g. because 1 song in the 50 is regionally locked), 
+                # fallback to adding them one by one so the whole batch doesn't fail
+                for track_id in batch:
+                    try:
+                        sp_dest.current_user_saved_tracks_add(tracks=[track_id])
+                        success_count += 1
+                    except Exception as fallback_e:
+                        print(f"Skipped problematic track {track_id}: {fallback_e}")
+                        continue
+                        
     except Exception as e:
         return jsonify({"error": f"Failed to add songs to new account: {str(e)}"}), 500
         
-    return jsonify({"success": True, "transferred": len(liked_songs)})
+    return jsonify({"success": True, "transferred": success_count})
 
 @app.route('/logout')
 def logout():
@@ -119,6 +135,4 @@ def logout():
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    print("Starting Spotify Transfer Tool...")
-    print("Go to http://localhost:5000 in your web browser!")
     app.run(debug=True, port=5000)
