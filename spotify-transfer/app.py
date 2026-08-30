@@ -1,63 +1,70 @@
 import os
-import time
 from flask import Flask, request, redirect, session, url_for, render_template, jsonify
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+from spotipy.cache_handler import FlaskSessionCacheHandler
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+# Use a strong secret key for production, fallback to random for local testing
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 app.config['SESSION_COOKIE_NAME'] = 'spotify-transfer-session'
 
 # We need scope for reading from the old account and writing to the new one
 SCOPE = 'user-library-read user-library-modify'
 
 def create_spotify_oauth(auth_type):
-    """Creates a SpotifyOAuth object with a specific cache file based on the auth_type (source or dest)"""
-    cache_path = f".cache-{auth_type}"
+    """Creates a SpotifyOAuth object that securely saves login info to the user's browser session"""
+    cache_handler = FlaskSessionCacheHandler(session, key=f"token_info_{auth_type}")
+    
     return SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
-        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:5000/callback"),
+        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
         scope=SCOPE,
-        cache_path=cache_path,
+        cache_handler=cache_handler,
         show_dialog=True  # Force login screen to allow switching accounts
     )
 
 @app.route('/')
 def index():
-    source_ready = os.path.exists('.cache-source')
-    dest_ready = os.path.exists('.cache-dest')
+    source_oauth = create_spotify_oauth('source')
+    dest_oauth = create_spotify_oauth('dest')
+    
+    # Check if the user's browser session currently holds valid tokens for both accounts
+    source_ready = source_oauth.validate_token(source_oauth.cache_handler.get_cached_token()) is not None
+    dest_ready = dest_oauth.validate_token(dest_oauth.cache_handler.get_cached_token()) is not None
+    
     return render_template('index.html', source_ready=source_ready, dest_ready=dest_ready)
 
 @app.route('/login/<auth_type>')
 def login(auth_type):
     if auth_type not in ['source', 'dest']:
         return "Invalid auth type", 400
-    session['auth_type'] = auth_type
+    session['current_auth_type'] = auth_type
     sp_oauth = create_spotify_oauth(auth_type)
     auth_url = sp_oauth.get_authorize_url()
     return redirect(auth_url)
 
 @app.route('/callback')
 def callback():
-    auth_type = session.get('auth_type')
+    auth_type = session.get('current_auth_type')
     if not auth_type:
         return redirect(url_for('index'))
     
     sp_oauth = create_spotify_oauth(auth_type)
     code = request.args.get('code')
-    token_info = sp_oauth.get_access_token(code)
     
+    # This automatically saves the token to the session via the FlaskSessionCacheHandler
+    sp_oauth.get_access_token(code)
+    
+    session.pop('current_auth_type', None)
     return redirect(url_for('index'))
 
 @app.route('/transfer', methods=['POST'])
 def transfer():
-    if not os.path.exists('.cache-source') or not os.path.exists('.cache-dest'):
-        return jsonify({"error": "Both accounts must be authenticated"}), 400
-    
     source_oauth = create_spotify_oauth('source')
     dest_oauth = create_spotify_oauth('dest')
     
@@ -65,7 +72,7 @@ def transfer():
     dest_token_info = dest_oauth.get_cached_token()
     
     if not source_token_info or not dest_token_info:
-        return jsonify({"error": "Token expired or not found. Please login again."}), 401
+        return jsonify({"error": "Both accounts must be authenticated. Please login again."}), 401
         
     sp_source = spotipy.Spotify(auth=source_token_info['access_token'])
     sp_dest = spotipy.Spotify(auth=dest_token_info['access_token'])
@@ -96,10 +103,6 @@ def transfer():
 
 @app.route('/logout')
 def logout():
-    if os.path.exists('.cache-source'):
-        os.remove('.cache-source')
-    if os.path.exists('.cache-dest'):
-        os.remove('.cache-dest')
     session.clear()
     return redirect(url_for('index'))
 
